@@ -7,7 +7,7 @@ Example:
     
     var express = require('express'), app = express(), activator = require('activator');
 		
-		activator.init({user:userModel,url:URL,templates:mailTemplatesDir});
+		activator.init({user:userModel,transport:smtpURL,from:"activator@github.com",templates:mailTemplatesDir});
 		
 		app.user(app.router);
 		
@@ -19,6 +19,10 @@ Example:
 		app.post("/passwordreset",activator.createPasswordReset);
 		app.put("/passwordreset/:user",activator.completePasswordReset);
 
+## Versions
+Activator version >= 1.0.0 works **only** with express >=4.0.0
+
+Activator version <1.0.0 works **only** with express <4.0.0
 
 ## Purpose
 Most interaction between users and your Web-driven service take place directly between the user and the server: log in, send a message, join a group, post an update, close a deal, etc. The user logs in by entering a username and password, and succeeds (or doesn't); the user enters a message and clicks "post"; etc.
@@ -87,7 +91,7 @@ To user *activator*, you select the routes you wish to use - activator does not 
 * How to find a user, so it can check for the user
 * How to update a user, so it can mark the user as being activated, or that it has a temporary password reset key
 * Where to find the templates to use for activation and password reset emails
-* What URL the user should be using to activate or reset a password. The URL is included in the email, since the user clicks on a link.
+* What URL the user should be using to activate or reset a password. The URL is included in the email, since the user normally clicks on a link.
 
 All of these are described in greater detail below.
 
@@ -111,8 +115,9 @@ The `config` object passed to `activator.init()` **must** contain the following 
 
 * `user`: object that allows activator to find and save a user object. See below.
 * `emailProperty`: the property of the returned user object that is the email of the recipient. Used in `user.find()`. Defaults to "email".
-* `url`: string that describes how we will send email. See below.
+* `transport`: string or pre-configured nodemailer transport that describes how we will send email. See below.
 * `templates`: string describing the full path to the mail templates. See below.
+* `from`: string representing the sender for all messages
 
 Optionally, config can also contain:
 
@@ -156,10 +161,13 @@ What ID does it use to save the user?
 
 
 
-##### url
-URL string of how activator should send mail. Structured as follows:
+##### transport
+There are 2 ways activator can send email: SMTP (default) or a passed-in transport.
 
-    protocol://user:pass@hostname:port/domain/sender?secureConnection=true
+###### SMTP
+If you are using SMTP - which is the default - all you need to pass in is a string describing how activator should connect with your mail server. It is structured as follows:
+
+    protocol://user:pass@hostname:port/domain?secureConnection=true
 		
 * `protocol`: normally "smtp", can be "smtps"
 * `user`: the user with which to login to the SMTP server, if authentication is required.
@@ -167,8 +175,44 @@ URL string of how activator should send mail. Structured as follows:
 * `hostname`: the hostname of the server, e.g. "smtp.gmail.com".
 * `port`: the port to use.
 * `domain`: the domain from which the mail is sent, when the mail server is first connected to.
-* `sender`: the email to use as the sender or "from" of the emails sent. Can be in the format `name@domain.com` or `My Name <name@domain.com>`. Should always be URL-encoded (or else you'll never get it into a URL!)
 * `secureConnection`: the use of SSL can be guided by the query parameter "secureConnection=true".
+
+###### Other
+If you prefer a different service - or you want to override the SMTP configuration - then instead of passing a URL string to transport, you can pass in a preconfigured nodemailer transport object. Since activator uses nodemailer under the covers, the transport is a pass-through.
+
+And, yes, you can even use the nodemailer SMTP transport instead of a URL string, if you prefer. Once activator receives a configured transport object, rather than a string, it doesn't care what it is as long as it works.
+
+How would you do it? Well, SMTP would normally look like this:
+
+    activator.init({transport:"smtp://user:pass@mysmtp.com/me.com"});
+		
+Or similar. 
+
+To use a pre-configured transport, you need to:
+
+1. Include the transport module
+2. Configure the transport
+3. Initialize activator with the transport
+
+Here is an SMTP example:
+
+    var smtpTransport = require('nodemailer-smtp-transport'), mailer = require('nodemailer');
+		var transport = mailer.createTransport(smtpTransport(options));
+		activator.init({transport:transport});
+		
+Of course, because the 'nodemailer-smtp-transport' is the default in nodemailer, the above example is **identical** to just passing in a URL string, but you can work whichever way works for you.
+
+Here is an Amazon Simple Email Service (SES) example:
+
+    var sesTransport = require('nodemailer-ses-transport'), mailer = require('nodemailer');
+		var transport = mailer.createTransport(sesTransport(options));
+		activator.init({transport:transport});
+		
+In all cases, it is up to *you* to set the `options` to create the transport.
+
+And if all you know (or want to know) is SMTP, then just use the default SMTP connection with a URL string.
+
+For details aboute nodemailer's transports, see the nodemailer transports at http://www.nodemailer.com/#available-transports
 
 ##### templates
 The directory where you keep text files that serve as mail templates. See below under the section templates.
@@ -282,7 +326,7 @@ If it is successful resetting the password, it will return `200`, a `400` if the
 
 
 ### Templates
-In order to send an email (yes, we are thinking about SMS for the future). activator needs to have templates. The templates are simple text files that contain the text or HTML to send.
+In order to send an email (yes, we are thinking about SMS for the future), activator needs to have templates. The templates are simple text files that contain the text or HTML to send.
 
 The templates should be in the directory passed to `activator.init()` as the option `templates`. It **must** be an absolute directory path (how else is activator going to know, relative to what??). Each template file should be named according to its function: "activate" or "passwordreset". You can, optionally, add ".txt" to the end of the filename, if it makes your life easier.
 
@@ -329,8 +373,59 @@ So if your password reset page is on the same host and protocol as the request t
 
 
 
+#### HTML and text templates
+Template files can be either text or HTML. If activator finds html, it will send html email; if activator finds text, it will send text email; if it finds both, it will send both in an email.
 
-Internationalization support is just around the corner...
+How does it know which? Simple: **filename extension**.
+
+* `activate.html` - use this as an HTML template for activation
+* `passwordreset.html` - use this as an HTML template for password reset
+* `activate.txt` - use this as a text template for activation
+* `passwordreset.txt` - use this as a text template for password reset
+* `activate` - use this as a text template for activation
+* `passwordreset` - use this as a text template for password reset
+
+Notice that there are two options for text templates: no filename extenstion (e.g. `activate`) and text extension (e.g. `activate.txt`). How does it know which one to use when both are there? Simple:
+
+1. Use the filename without an extension. If it does not exist:
+2. Use the filename with the `.txt` extension.
+
+The content format of both kinds of templates (html and text) is the same as described above and have all of the same variables.
+
+
+#### Localized templates
+
+Activator supports localized templates. You can have one template for the locale `en_GB`, a separate one for `fr` and a third for `he_IL`. Just create the files with the correct name as an extension: filename type (e.g. `activate`), followed by `_` followed by the locale string (e.g. `en_GB` or `fr`) following by the optional filetype extension (nothing or `.txt` or `.html`).
+
+Here are some examples:
+
+* `activate_en_GB.txt` - text template for locale `en_GB`
+* `activate_en_GB` - text template for locale `en_GB`
+* `activate_en_GB.html` - html template for locale `en_GB`
+* `activate_fr.html` - html template for locale `fr`, will be used when the language is `fr` or `fr_`*anything* that is not matched
+* `activate` - fallback for all unmatched locales
+
+The search pattern is as follows.
+
+1. Look for an exact match of the locale, e.g. for `en_GB`, look for `activate_en_GB`
+2. Look for a language match, e.g. for `en_GB`, look for `activate_en`
+3. Look for a default file, e.g. for `en_GB`, look for `activate`
+
+How does it know which language to use? Simple, just set it on `req.lang`. You might have retrieved that from your user preferences, or from your application's default, or perhaps from the http header `Accept-Language`. Either way, you should set it in earlier middleware:
+
+````JavaScript
+		app.use(function(req,res,next){
+			req.lang = myLang; // Set your lang here
+		});
+		app.use(app.router);
+		app.post('/users',activator.createActivate); // etc.
+````
+
+
+
+
+
+
 
 ## Example
 An example - just a simplified and stripped down version of the tests - is available in `./example.js`. It can be run via `node ./example.js`
